@@ -4,6 +4,10 @@ version = "0.7.0"
 edition = "2024"
 
 [dependencies]
+<<<<<<< Updated upstream
+=======
+axum = "0.6.20"
+>>>>>>> Stashed changes
 nix = { version = "0.29", features = ["user"] }
 
 [profile.release]
