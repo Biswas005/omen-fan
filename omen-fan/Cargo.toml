@@ -5,6 +5,10 @@ edition = "2024"
 
 [dependencies]
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
+=======
+axum = "0.6.20"
+>>>>>>> Stashed changes
 =======
 axum = "0.6.20"
 >>>>>>> Stashed changes

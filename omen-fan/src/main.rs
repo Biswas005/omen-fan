@@ -23,6 +23,9 @@ use std::{
     thread,
     time::Duration,
 };
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 
 const EC_IO_FILE: &str = "/sys/kernel/debug/ec/ec0/io";
@@ -180,6 +183,9 @@ async fn set_curve_config(
 ) -> impl IntoResponse {
     state.lock().unwrap().curve_config = curve;
     "Curve config updated"
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 }
 
@@ -243,6 +249,7 @@ fn main() {
 
     loop {
 <<<<<<< Updated upstream
+<<<<<<< Updated upstream
         let temp = get_max_temp();
 
         let speed = match temp {
@@ -257,6 +264,8 @@ fn main() {
                 (s0 as usize + ((s1 - s0) as usize * (temp - t0) as usize / (t1 - t0) as usize)) as u8
             }
 =======
+=======
+>>>>>>> Stashed changes
         let lock = state.lock().unwrap();
         let temp = read_ec(CPU_TEMP_OFFSET).max(read_ec(GPU_TEMP_OFFSET));
         let fan_cfg = &lock.fan_config;
@@ -310,5 +319,8 @@ fn write_ec(offset: u64, value: u8) {
     let mut file = OpenOptions::new().write(true).open(EC_IO_FILE).unwrap();
     file.seek(SeekFrom::Start(offset)).unwrap();
     file.write_all(&[value]).unwrap();
+<<<<<<< Updated upstream
+>>>>>>> Stashed changes
+=======
 >>>>>>> Stashed changes
 }
