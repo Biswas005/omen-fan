@@ -108,17 +108,17 @@ fn main() {
     loop {
         let temp = get_max_temp();
 
-        let speed = if temp <= temp_curve[0] {
-            idle_speed
-        } else if temp >= temp_curve[temp_curve.len() - 1] {
-            speed_curve[speed_curve.len() - 1]
-        } else {
-            let index = temp_curve.iter().position(|&t| t > temp).unwrap();
-            let t0 = temp_curve[index - 1];
-            let t1 = temp_curve[index];
-            let s0 = speed_curve[index - 1];
-            let s1 = speed_curve[index];
-            (s0 as usize + ((s1 - s0) as usize * (temp - t0) as usize / (t1 - t0) as usize)) as u8
+        let speed = match temp {
+            t if t <= temp_curve[0] => idle_speed,
+            t if t >= temp_curve[temp_curve.len() - 1] => speed_curve[speed_curve.len() - 1],
+            _ => {
+                let index = temp_curve.iter().position(|&t| t > temp).unwrap();
+                let t0 = temp_curve[index - 1];
+                let t1 = temp_curve[index];
+                let s0 = speed_curve[index - 1];
+                let s1 = speed_curve[index];
+                (s0 as usize + ((s1 - s0) as usize * (temp - t0) as usize / (t1 - t0) as usize)) as u8
+            }
         };
 
         let fan1_speed = ((FAN1_MAX as u16 * speed as u16) / 100) as u8;
