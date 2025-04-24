@@ -61,19 +61,19 @@ async fn set_mode(data: web::Data<Arc<AppState>>, req: web::Json<ModeRequest>) -
     }
 }
 
-pub async fn run_api_server(fan_control: FanControl, port: u16) -> std::io::Result<()> {
+pub fn run_api_server(fan_control: FanControl, port: u16) -> impl std::future::Future<Output = std::io::Result<()>> + Send + 'static {
     let app_state = Arc::new(AppState {
         fan_control: Mutex::new(fan_control),
     });
 
     println!("Starting API server on port {}", port);
-    
+
     HttpServer::new(move || {
         let cors = Cors::default()
             .allow_any_origin()
             .allow_any_method()
             .allow_any_header();
-            
+
         App::new()
             .wrap(cors)
             .app_data(web::Data::new(app_state.clone()))
@@ -81,7 +81,7 @@ pub async fn run_api_server(fan_control: FanControl, port: u16) -> std::io::Resu
             .service(set_fan_speed)
             .service(set_mode)
     })
-    .bind(("127.0.0.1", port))?
+    .bind(("127.0.0.1", port))
+    .expect("Failed to bind port")
     .run()
-    .await
 }
