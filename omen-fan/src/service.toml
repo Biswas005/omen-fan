@@ -1,5 +1,0 @@
-[service]
-temp_curve = [45, 55, 65, 75, 85, 95]
-speed_curve = [20, 40, 60, 80, 90, 100]
-idle_speed = 10
-poll_interval = 2
