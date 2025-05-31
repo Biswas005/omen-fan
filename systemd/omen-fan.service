@@ -1,0 +1,11 @@
+[Unit]
+Description=Omen Fan Control Service
+After=multi-user.target
+
+[Service]
+ExecStart=/usr/local/bin/omen-fan --config /path-to-/fan_config.toml
+Restart=always
+User=root
+
+[Install]
+WantedBy=multi-user.target

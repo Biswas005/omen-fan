@@ -1,0 +1,11 @@
+#exclude target
+target/
+/target
+/omen-fan/target
+#exclude .DS_Store
+.DS_Store
+#exclude .idea
+.idea/
+ /omen-fan-1/
+omen-fan-1/
+/omen-fan/systemd/
