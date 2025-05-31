@@ -41,7 +41,11 @@ jobs:
           archive: omen-fan-x86_64-unknown-linux-gnu
           tar: unix
           token: ${{ secrets.GITHUB_TOKEN }}
-          include: release/omen-fan/omen-fan release/omen-fan/install.sh release/omen-fan/omen-fan.service release/omen-fan/fan_config.toml
+          include: |
+            release/omen-fan/omen-fan
+            release/omen-fan/install.sh
+            release/omen-fan/omen-fan.service
+            release/omen-fan/fan_config.toml
 
   manual-build:
     if: github.event_name == 'workflow_dispatch'
