@@ -2,6 +2,10 @@ name: Manual Build
 
 on:
   workflow_dispatch:
+    inputs:
+      tag_name:
+        description: 'Tag name for the release (e.g. v0.5.1)'
+        required: true
 
 permissions:
   contents: write
@@ -24,27 +28,21 @@ jobs:
           cp src/omen-fan.service release/omen-fan/
           cp src/fan_config.toml release/omen-fan/
 
+      - name: Create tarball
+        run: |
+          tar -czvf omen-fan-x86_64-unknown-linux-gnu.tar.gz -C release omen-fan
+
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: omen-fan-manual-build
-          path: release/omen-fan/
+          path: omen-fan-x86_64-unknown-linux-gnu.tar.gz
 
       - name: Create GitHub Release
-        uses: taiki-e/create-gh-release-action@v1
+        uses: softprops/action-gh-release@v2
         with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Upload Linux Binary
-        uses: taiki-e/upload-rust-binary-action@v1
-        with:
-          bin: omen-fan
-          target: x86_64-unknown-linux-gnu
-          archive: omen-fan-x86_64-unknown-linux-gnu
-          tar: unix
-          token: ${{ secrets.GITHUB_TOKEN }}
-          include: |
-            release/omen-fan/omen-fan
-            release/omen-fan/install.sh
-            release/omen-fan/omen-fan.service
-            release/omen-fan/fan_config.toml
+          tag_name: ${{ github.event.inputs.tag_name }}
+          name: ${{ github.event.inputs.tag_name }}
+          files: omen-fan-x86_64-unknown-linux-gnu.tar.gz
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
