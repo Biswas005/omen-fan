@@ -1,15 +1,13 @@
-name: Release
+name: Manual Build
 
 on:
-  push:
-    tags:
-      - 'v[0-9]+.*'
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  release-linux:
+  manual-build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout code
@@ -25,6 +23,12 @@ jobs:
           cp install.sh release/omen-fan/
           cp src/omen-fan.service release/omen-fan/
           cp src/fan_config.toml release/omen-fan/
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: omen-fan-manual-build
+          path: release/omen-fan/
 
       - name: Create GitHub Release
         uses: taiki-e/create-gh-release-action@v1
