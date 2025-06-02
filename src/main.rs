@@ -10,7 +10,6 @@ use clap::{Arg, Command as ClapCommand};
 
 #[cfg(feature = "acpi_ec")]
 const EC_IO_FILE: &str = "/dev/ec";
-
 #[cfg(not(feature = "acpi_ec"))]
 const EC_IO_FILE: &str = "/sys/kernel/debug/ec/ec0/io";
 
@@ -20,12 +19,17 @@ const FAN2_OFFSET: u64 = 0x35;
 const CPU_TEMP_OFFSET: u64 = 0x57;
 const GPU_TEMP_OFFSET: u64 = 0xB7;
 const BIOS_CONTROL_OFFSET: u64 = 0x62;
+const TIMER_OFFSET: u64 = 0x63; // New: Timer monitoring offset
 const FAN1_MAX: u8 = 55;
 const FAN2_MAX: u8 = 57;
+const TIMER_RESET_VALUE: u8 = 0x78; // 120 decimal
+const TIMER_THRESHOLD: u8 = 10; // Reset timer when it drops to this value or below
+
 const BIOS_LEGACY_DEFAULT_MODE: u8 = 0;
 const BIOS_DEFAULT_MODE: u8 = 48; // 0x30
 const BIOS_PERFORMANCE_MODE: u8 = 49; // 0x31
 const BIOS_COOL_MODE: u8 = 80; // 0x50
+const ACPI_PLATFORM_PROFILE_PATH: &str = "/sys/firmware/acpi/platform_profile";
 
 #[derive(Debug, Deserialize, Serialize, Clone)]
 struct FanPoint {
@@ -107,6 +111,108 @@ fn apply_bios_mode(mode: u8) {
     write_ec_register(PERFORMANCE_OFFSET, mode);
 }
 
+// Read ACPI platform profile
+fn read_acpi_platform_profile() -> String {
+    match fs::read_to_string(ACPI_PLATFORM_PROFILE_PATH) {
+        Ok(content) => {
+            let profile = content.trim().to_lowercase();
+            println!("ACPI Platform Profile: {}", profile);
+            // Map eco to cool for consistency
+            if profile == "eco" {
+                "cool".to_string()
+            } else {
+                profile
+            }
+        }
+        Err(e) => {
+            println!("Warning: Could not read ACPI platform profile: {}", e);
+            "balanced".to_string() // Default fallback
+        }
+    }
+}
+
+// Convert profile name to BIOS mode value
+fn profile_to_bios_mode(profile: &str) -> u8 {
+    match profile {
+        "performance" => BIOS_PERFORMANCE_MODE, // 0x31
+        "cool" | "eco" => BIOS_COOL_MODE, // 0x50
+        "balanced" | "default" => BIOS_DEFAULT_MODE, // 0x30
+        _ => BIOS_DEFAULT_MODE, // 0x30
+    }
+}
+
+// Convert BIOS mode value to profile name
+fn bios_mode_to_profile(mode: u8) -> String {
+    match mode {
+        0x31 => "performance".to_string(),
+        0x50 => "cool".to_string(),
+        0x30 => "balanced".to_string(),
+        0x00 => "balanced".to_string(), // Legacy default
+        _ => format!("unknown(0x{:02X})", mode),
+    }
+}
+
+// Check if current BIOS mode matches expected profile and correct if needed
+fn check_and_correct_bios_mode(expected_profile: &str) {
+    let current_register_value = read_ec_register(PERFORMANCE_OFFSET);
+    let current_profile = bios_mode_to_profile(current_register_value);
+    let expected_bios_mode = profile_to_bios_mode(expected_profile);
+
+    println!("Mode Check - Expected: {}, Current EC: {} (0x{:02X})",
+             expected_profile, current_profile, current_register_value);
+
+    if current_register_value != expected_bios_mode {
+        println!("WARNING: BIOS mode mismatch detected!");
+        println!("Correcting BIOS mode from {} (0x{:02X}) to {} (0x{:02X})",
+                 current_profile, current_register_value,
+                 expected_profile, expected_bios_mode);
+
+        // Disable BIOS control first to ensure we can write
+        disable_bios_control();
+        sleep(Duration::from_millis(100)); // Brief pause
+
+        // Apply the correct mode
+        apply_bios_mode(expected_bios_mode);
+        sleep(Duration::from_millis(100)); // Brief pause
+
+        // Verify the change was applied
+        let new_register_value = read_ec_register(PERFORMANCE_OFFSET);
+        if new_register_value == expected_bios_mode {
+            println!("SUCCESS: BIOS mode corrected to {} (0x{:02X})",
+                     expected_profile, new_register_value);
+        } else {
+            println!("ERROR: Failed to correct BIOS mode. Expected 0x{:02X}, got 0x{:02X}",
+                     expected_bios_mode, new_register_value);
+        }
+    } else {
+        println!("INFO: BIOS mode is correct ({} / 0x{:02X})", expected_profile, current_register_value);
+    }
+}
+
+// New function to monitor and reset timer
+fn check_and_reset_timer() {
+    let timer_value = read_ec_register(TIMER_OFFSET);
+    println!("DEBUG: Timer register (0x{:02X}): {} seconds remaining", TIMER_OFFSET, timer_value);
+
+    if timer_value <= TIMER_THRESHOLD {
+        println!("WARNING: Timer approaching zero ({}), resetting to {} (0x{:02X})",
+                 timer_value, TIMER_RESET_VALUE, TIMER_RESET_VALUE);
+        write_ec_register(TIMER_OFFSET, TIMER_RESET_VALUE);
+
+        // Verify the write was successful
+        let new_timer_value = read_ec_register(TIMER_OFFSET);
+        println!("SUCCESS: Timer reset confirmed - new value: {} seconds", new_timer_value);
+
+        if new_timer_value != TIMER_RESET_VALUE {
+            println!("ERROR: Timer reset failed! Expected {}, got {}", TIMER_RESET_VALUE, new_timer_value);
+        } else {
+            println!("INFO: Timer successfully reset from {} to {} seconds", timer_value, new_timer_value);
+        }
+    } else {
+        println!("INFO: Timer OK - {} seconds remaining (threshold: {})", timer_value, TIMER_THRESHOLD);
+    }
+}
+
 fn mode() -> String {
     let register_value = read_ec_register(PERFORMANCE_OFFSET);
     println!("Performance register (0x95): 0x{:02X}", register_value); // Debug output
@@ -179,26 +285,31 @@ fn main() {
 
     let mut config: FanConfig = read_fan_config(config_path).expect("Failed to load initial config");
 
-    let idle_speed = 0;
     let poll_interval = Duration::from_secs(1);
-    let bios_control_interval = Duration::from_secs(100); // 100 seconds
-    let config_check_interval = Duration::from_secs(2); // Check TOML file every 5 seconds
-    let mut last_bios_control = Instant::now();
-    let mut last_config_check = Instant::now();
+    let config_check_interval = Duration::from_secs(2); // Check TOML file every 2 seconds
+    let bios_control_interval = Duration::from_secs(10); // Disable BIOS control every 10 seconds
 
+    let mut last_config_check = Instant::now();
+    let mut last_bios_control = Instant::now();
     let mut previous_speed = (0, 0);
     let mut previous_mode = "Legacy Default Mode".to_string();
     let mut previous_runtime_mode = String::new();
     let mut temp_history: VecDeque<u8> = VecDeque::with_capacity(5);
 
+    // Initial BIOS control disable
+    disable_bios_control();
+
     loop {
-        // Check if 100 seconds have elapsed to call disable_bios_control
+        // Check and reset timer every loop iteration (every second)
+        check_and_reset_timer();
+
+        // Disable BIOS control periodically
         if last_bios_control.elapsed() >= bios_control_interval {
             disable_bios_control();
-            last_bios_control = Instant::now(); // Reset timer
+            last_bios_control = Instant::now();
         }
 
-        // Check if 5 seconds have elapsed to re-read fan_config.toml
+        // Check if 2 seconds have elapsed to re-read fan_config.toml
         if last_config_check.elapsed() >= config_check_interval {
             match read_fan_config(config_path) {
                 Ok(new_config) => {
@@ -213,20 +324,36 @@ fn main() {
         }
 
         let current_mode = mode();
+        let acpi_profile = read_acpi_platform_profile();
         println!("Current mode: {current_mode}"); // Debug output
-
         let runtime_mode = read_runtime_mode(&config);
-        // Apply BIOS mode based on config.mode
-        if runtime_mode != previous_runtime_mode {
-            let bios_mode = match runtime_mode.as_str() {
-                "performance" => BIOS_PERFORMANCE_MODE, // 0x31
-                "cool" => BIOS_COOL_MODE, // 0x50
-                _ => BIOS_DEFAULT_MODE, // 0x30
-            };
-            println!("Applying BIOS mode: {} (0x{:02X})", runtime_mode, bios_mode);
+
+        // Determine the target profile - prioritize config, fallback to ACPI
+        let target_profile = if !runtime_mode.is_empty() && runtime_mode != "balanced" {
+            runtime_mode.clone()
+        } else {
+            acpi_profile.clone()
+        };
+
+        println!("Target profile: {} (from {})",
+                 target_profile,
+                 if runtime_mode != "balanced" && !runtime_mode.is_empty() { "config" } else { "ACPI" });
+
+        // Check and correct BIOS mode if it doesn't match target
+        check_and_correct_bios_mode(&target_profile);
+
+        // Apply BIOS mode based on target profile (only if mode changed)
+        if target_profile != previous_runtime_mode {
+            let bios_mode = profile_to_bios_mode(&target_profile);
+            println!("Applying BIOS mode: {} (0x{:02X})", target_profile, bios_mode);
+
+            // Ensure BIOS control is disabled before applying mode
+            disable_bios_control();
+            sleep(Duration::from_millis(100));
+
             apply_bios_mode(bios_mode);
-            write_runtime_mode(config_path, &runtime_mode, &config);
-            previous_runtime_mode = runtime_mode.clone();
+            write_runtime_mode(config_path, &target_profile, &config);
+            previous_runtime_mode = target_profile.clone();
         }
 
         let current_temp = get_max_temp();
@@ -238,16 +365,18 @@ fn main() {
         let avg_temp = (temp_history.iter().map(|&x| x as u16).sum::<u16>() / temp_history.len() as u16) as u8;
         println!("Avg temperature: {}\u{00B0}C", avg_temp);
 
-        let curve = match runtime_mode.as_str() {
+        let curve = match target_profile.as_str() {
             "performance" => &config.performance.curve,
-            "cool" => &config.cool.curve,
+            "cool" | "eco" => &config.cool.curve,
             _ => &config.default.curve,
         };
 
         let speed = lookup_speed(curve, avg_temp as u64);
         let fan1_speed = ((FAN1_MAX as u16 * speed as u16) / 100) as u8;
         let fan2_speed = ((FAN2_MAX as u16 * speed as u16) / 100) as u8;
-        println!("Selected curve: {}, Temp: {}°C, Speed: {}, Fan1: {}, Fan2: {}", runtime_mode, avg_temp, speed, fan1_speed, fan2_speed);
+
+        println!("Selected curve: {}, Temp: {}°C, Speed: {}, Fan1: {}, Fan2: {}",
+                 target_profile, avg_temp, speed, fan1_speed, fan2_speed);
 
         if previous_speed != (fan1_speed, fan2_speed) {
             set_fan_speed(fan1_speed, fan2_speed);
