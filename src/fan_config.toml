@@ -61,8 +61,8 @@ temp = 76
 speed = 100
 
 [[cool.curve]]
-temp = 0
-speed = 10
+temp = 42
+speed = 0
 
 [[cool.curve]]
 temp = 46
