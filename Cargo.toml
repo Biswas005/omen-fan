@@ -8,10 +8,10 @@ members = [
 resolver = "2"
 
 [workspace.package]
-edition = "2021"
-version = "0.3.0"
+edition = "2024"
+version = "1.0.0"
 license = "MIT"
-authors = ["OpenAI"]
+authors = ["Amrdeep Biswas"]
 
 [workspace.dependencies]
 anyhow = "1"

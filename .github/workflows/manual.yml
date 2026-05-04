@@ -3,9 +3,10 @@ name: Manual Build
 on:
   workflow_dispatch:
     inputs:
-      tag_name:
-        description: 'Tag name for the release (e.g. v0.5.1)'
-        required: true
+      version:
+        description: 'Optional package version, defaults to workspace version'
+        required: false
+        default: ''
 
 permissions:
   contents: write
@@ -17,32 +18,63 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      - name: Build release binary
-        run: cargo build --release
+      - name: Determine version
+        id: version
+        run: |
+          WORKSPACE_VERSION=$(grep '^version' Cargo.toml | head -n1 | awk -F'"' '{print $2}')
+          if [[ -n "${{ github.event.inputs.version }}" ]]; then
+            VERSION=${{ github.event.inputs.version }}
+          else
+            VERSION=$WORKSPACE_VERSION
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_OUTPUT
+
+      - name: Install packaging tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ruby-full build-essential rpm
+          sudo gem install --no-document fpm
+
+      - name: Build release binaries
+        run: cargo build --release --workspace
 
       - name: Prepare release folder
         run: |
           mkdir -p release/omen-fan
-          cp target/release/omen-fan release/omen-fan/
-          cp install.sh release/omen-fan/
-          cp src/omen-fan.service release/omen-fan/
-          cp src/fan_config.toml release/omen-fan/
+          cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui install.sh packaging/systemd/omen-fand.service release/omen-fan/
 
       - name: Create tarball
         run: |
           tar -czvf omen-fan-x86_64-unknown-linux-gnu.tar.gz -C release omen-fan
 
-      - name: Upload artifact
+      - name: Create desktop and package layout
+        run: |
+          mkdir -p package/usr/local/bin package/etc/systemd/system package/usr/share/applications
+          cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui package/usr/local/bin/
+          cp packaging/systemd/omen-fand.service package/etc/systemd/system/omen-daemon.service
+          cat > package/usr/share/applications/omen-ui.desktop <<'DESKTOP_EOF'
+            [Desktop Entry]
+            Name=OMEN Fan Control
+            Comment=Open OMEN fan control UI
+            Exec=/usr/local/bin/omen-ui
+            Icon=utilities-system-monitor
+            Terminal=false
+            Type=Application
+            Categories=Utility;System;
+            StartupWMClass=omen-ui
+          DESKTOP_EOF
+          chmod 755 package/usr/local/bin/*
+
+      - name: Build DEB and RPM packages
+        run: |
+          fpm -s dir -t deb -n omen-fan -v ${{ steps.version.outputs.VERSION }} --architecture amd64 -C package .
+          fpm -s dir -t rpm -n omen-fan -v ${{ steps.version.outputs.VERSION }} --architecture x86_64 -C package .
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: omen-fan-manual-build
-          path: omen-fan-x86_64-unknown-linux-gnu.tar.gz
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.inputs.tag_name }}
-          name: ${{ github.event.inputs.tag_name }}
-          files: omen-fan-x86_64-unknown-linux-gnu.tar.gz
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          path: |
+            omen-fan-x86_64-unknown-linux-gnu.tar.gz
+            *.deb
+            *.rpm
