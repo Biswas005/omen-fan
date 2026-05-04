@@ -5,8 +5,8 @@ edition.workspace = true
 license.workspace = true
 authors.workspace = true
 description = "Core library for OMEN fan control"
-repository = "https://github.com/alou-S/omen-fan"
-homepage = "https://github.com/alou-S/omen-fan"
+repository = "https://github.com/biswas005/omen-fan"
+homepage = "https://github.com/biswas005/omen-fan"
 documentation = "https://docs.rs/omen-core"
 
 [dependencies]

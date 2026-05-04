@@ -70,6 +70,29 @@ jobs:
           fpm -s dir -t deb -n omen-fan -v ${{ steps.version.outputs.VERSION }} --architecture amd64 -C package .
           fpm -s dir -t rpm -n omen-fan -v ${{ steps.version.outputs.VERSION }} --architecture x86_64 -C package .
 
+      - name: Create GitHub release
+        id: create_release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          name: "omen-fan ${{ steps.version.outputs.VERSION }}"
+          body: "Manual build release for version ${{ steps.version.outputs.VERSION }}"
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload release assets
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ steps.version.outputs.VERSION }}
+          files: |
+            omen-fan-x86_64-unknown-linux-gnu.tar.gz
+            *.deb
+            *.rpm
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
