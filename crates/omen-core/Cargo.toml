@@ -1,0 +1,15 @@
+[package]
+name = "omen-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+description = "Core library for OMEN fan control"
+repository = "https://github.com/alou-S/omen-fan"
+homepage = "https://github.com/alou-S/omen-fan"
+documentation = "https://docs.rs/omen-core"
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true

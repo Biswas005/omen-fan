@@ -1,0 +1,15 @@
+[package]
+name = "omen-ui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+eframe.workspace = true
+egui.workspace = true
+egui_plot.workspace = true
+resvg.workspace = true
+omen-core = "1.0.0"
