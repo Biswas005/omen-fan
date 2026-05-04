@@ -2477,7 +2477,7 @@ dependencies = [
 
 [[package]]
 name = "omen-cli"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "omen-core",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "omen-core"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "chrono",
  "serde",
@@ -2495,7 +2495,7 @@ dependencies = [
 
 [[package]]
 name = "omen-daemon"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -2510,7 +2510,7 @@ dependencies = [
 
 [[package]]
 name = "omen-ui"
-version = "0.3.0"
+version = "1.0.0"
 dependencies = [
  "anyhow",
  "eframe",
