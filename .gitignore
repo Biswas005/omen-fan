@@ -11,3 +11,4 @@ omen-fan-1/
 /systemd/
 /systemd
 /omen-fan/systemd/
+crates/
