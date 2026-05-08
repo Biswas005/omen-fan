@@ -41,7 +41,8 @@ jobs:
       - name: Prepare release folder
         run: |
           mkdir -p release/omen-fan
-          cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui install.sh packaging/systemd/omen-fand.service release/omen-fan/
+          cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui install.sh packaging/systemd/omen-daemon.service release/omen-fan/
+          cp -r Driver release/omen-fan/Driver
 
       - name: Create tarball
         run: |
@@ -51,7 +52,7 @@ jobs:
         run: |
           mkdir -p package/usr/local/bin package/etc/systemd/system package/usr/share/applications
           cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui package/usr/local/bin/
-          cp packaging/systemd/omen-fand.service package/etc/systemd/system/omen-daemon.service
+          cp packaging/systemd/omen-daemon.service package/etc/systemd/system/omen-daemon.service
           cat > package/usr/share/applications/omen-ui.desktop <<'DESKTOP_EOF'
             [Desktop Entry]
             Name=OMEN Fan Control
