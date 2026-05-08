@@ -42,13 +42,10 @@ sudo ./install.sh
 ```
 
 This will:
-- Compile the included `hp-wmi` kernel module using your local kernel headers
-- Generate a Secure Boot key, sign the driver, and prompt you to import it via `mokutil`
-- Install the binaries (`omen-cli`, `omen-daemon`, `omen-ui`) to `/usr/local/bin/` (or `/usr/bin/` depending on your distro)
-- Install the systemd service to `/etc/systemd/system/` (or `/usr/lib/systemd/system/`)
-- Enable and start the `omen-daemon` service
 
-**Note**: Because this script compiles a kernel module, you must have `make`, `gcc`, `openssl`, `mokutil`, and your kernel headers installed (e.g. `linux-headers-$(uname -r)` or `kernel-devel`). After running the script, you **MUST restart your computer** to enroll the MOK key in Shim.
+- Copy the binary and config to `/usr/local/bin/`
+- Install the systemd service to `/etc/systemd/system/`
+- Enable and start the `omen-fan` service
 
 ### 3. **Configure**
 
@@ -71,26 +68,33 @@ The daemon will reload changes automatically.
 
 1. **Install Rust** from [the official website](https://rustup.rs/).
 2. **Clone the repository:**
+
    ```sh
    git clone https://github.com/alou-S/omen-fan.git
    cd omen-fan
    ```
+
 3. **Build:**
+
    ```sh
    cargo build --release
    ```
+
    Or, to enable the `acpi_ec` feature:
+
    ```sh
    cargo build --release --features acpi_ec
    ```
 
 4. **Install manually (if not using the install script):**
+
    ```sh
-   sudo cp target/release/omen-cli target/release/omen-daemon target/release/omen-ui /usr/local/bin/
-   sudo cp packaging/systemd/omen-daemon.service /etc/systemd/system/
+   sudo cp target/release/omen-fan /usr/local/bin/
+   sudo cp src/fan_config.toml /usr/local/bin/
+   sudo cp src/omen-fan.service /etc/systemd/system/
    sudo systemctl daemon-reload
-   sudo systemctl enable omen-daemon.service
-   sudo systemctl start omen-daemon.service
+   sudo systemctl enable omen-fan.service
+   sudo systemctl start omen-fan.service
    ```
 
 ---
