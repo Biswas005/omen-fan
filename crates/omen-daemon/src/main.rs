@@ -124,27 +124,29 @@ impl Daemon {
         }
         let avg = self.avg_temp();
 
-        match profile.fan_mode {
-            FanMode::Auto => {
-                self.hw.set_auto()?;
-                self.max_fan_active = false;
-                self.applied_duty_pct = 0.0;
-            }
-            FanMode::Max => {
-                self.hw.set_max_fan(true)?;
-                self.max_fan_active = true;
-                self.applied_duty_pct = 100.0;
-            }
-            FanMode::Manual => {
-                self.hw.set_max_fan(false)?;
-                self.max_fan_active = false;
-                self.apply_target(profile.manual_pct as f32, &profile)?;
-            }
-            FanMode::Curve => {
-                self.hw.set_max_fan(false)?;
-                self.max_fan_active = false;
-                let target = self.compute_curve_target(&profile, raw, avg);
-                self.apply_target(target, &profile)?;
+        if profile.max_fan || profile.fan_mode == FanMode::Max {
+            self.hw.set_max_fan(true)?;
+            self.max_fan_active = true;
+            self.applied_duty_pct = 100.0;
+        } else {
+            match profile.fan_mode {
+                FanMode::Auto => {
+                    self.hw.set_auto()?;
+                    self.max_fan_active = false;
+                    self.applied_duty_pct = 0.0;
+                }
+                FanMode::Manual => {
+                    self.hw.set_max_fan(false)?;
+                    self.max_fan_active = false;
+                    self.apply_target(profile.manual_pct as f32, &profile)?;
+                }
+                FanMode::Curve => {
+                    self.hw.set_max_fan(false)?;
+                    self.max_fan_active = false;
+                    let target = self.compute_curve_target(&profile, raw, avg);
+                    self.apply_target(target, &profile)?;
+                }
+                FanMode::Max => unreachable!(),
             }
         }
 
@@ -330,6 +332,9 @@ impl Daemon {
                 Request::SetFanMode { profile, mode } => {
                     let p = self.state.profile_mut(&profile).context("unknown profile")?;
                     p.fan_mode = mode.clone();
+                    if mode != FanMode::Max {
+                        p.max_fan = false;
+                    }
                     if self.state.active_profile == profile {
                         let p = self.state.active().clone();
                         self.apply_profile(&p)?;
