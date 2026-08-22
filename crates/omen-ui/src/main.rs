@@ -7,8 +7,57 @@ use resvg::{tiny_skia, usvg};
 use std::{
     io::{BufRead, BufReader, Write},
     os::unix::net::UnixStream,
+    sync::mpsc,
+    thread,
     time::{Duration, Instant},
 };
+
+const ZOOM_KEY: &str = "omen_ui_zoom";
+const POLL_INTERVAL: Duration = Duration::from_millis(500);
+const IDLE_REPAINT: Duration = Duration::from_millis(1000);
+const WIDE_BREAKPOINT: f32 = 980.0;
+const MAX_CONTENT_WIDTH: f32 = 1400.0;
+const MIN_ZOOM: f32 = 0.75;
+const MAX_ZOOM: f32 = 2.0;
+
+/// Messages flowing from the background IO worker back to the UI thread.
+enum UiMsg {
+    Snapshot(Snapshot),
+    Error(String),
+}
+
+/// Spawns a background thread that owns all daemon-socket IO, so the UI
+/// thread never blocks on a `connect()`/`read()` while painting a frame.
+/// It auto-polls on a timer and also drains any user-triggered requests,
+/// waking the UI (`ctx.request_repaint()`) only when there's new data.
+fn spawn_worker(
+    ctx: egui::Context,
+    cmd_rx: mpsc::Receiver<Request>,
+    msg_tx: mpsc::Sender<UiMsg>,
+) {
+    thread::spawn(move || {
+        let mut last_poll = Instant::now() - POLL_INTERVAL;
+        loop {
+            let elapsed = last_poll.elapsed();
+            let timeout = POLL_INTERVAL.saturating_sub(elapsed);
+            let req = match cmd_rx.recv_timeout(timeout) {
+                Ok(req) => req,
+                Err(mpsc::RecvTimeoutError::Timeout) => Request::GetSnapshot,
+                Err(mpsc::RecvTimeoutError::Disconnected) => return,
+            };
+            last_poll = Instant::now();
+            let msg = match send(req) {
+                Ok(Response::Snapshot(s)) => UiMsg::Snapshot(s),
+                Ok(Response::Error { message }) => UiMsg::Error(message),
+                Err(err) => UiMsg::Error(format!("Daemon unavailable: {err:#}")),
+            };
+            if msg_tx.send(msg).is_err() {
+                return; // UI gone
+            }
+            ctx.request_repaint();
+        }
+    });
+}
 
 #[derive(Clone)]
 struct DraftCurve {
@@ -24,7 +73,10 @@ struct App {
     selected_profile: String,
     draft_curve: Option<DraftCurve>,
     status: String,
-    last_refresh: Instant,
+    connected: bool,
+    zoom: f32,
+    cmd_tx: mpsc::Sender<Request>,
+    msg_rx: mpsc::Receiver<UiMsg>,
 }
 
 fn load_icon() -> IconData {
@@ -47,9 +99,10 @@ fn main() -> Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_title("OMEN Control")
             .with_app_id("omen-control")
-            .with_inner_size([1600.0, 980.0])
-            .with_min_inner_size([1280.0, 800.0])
+            .with_inner_size([1280.0, 820.0])
+            .with_min_inner_size([560.0, 480.0])
             .with_icon(load_icon()),
+        persist_window: true,
         ..Default::default()
     };
     eframe::run_native("OMEN Control", native, Box::new(|cc| Ok(Box::new(App::new(cc)?))))
@@ -59,40 +112,63 @@ fn main() -> Result<()> {
 
 impl App {
     fn new(cc: &eframe::CreationContext<'_>) -> Result<Self> {
+        let zoom = cc
+            .storage
+            .and_then(|s| eframe::get_value::<f32>(s, ZOOM_KEY))
+            .unwrap_or(1.0)
+            .clamp(MIN_ZOOM, MAX_ZOOM);
+        cc.egui_ctx.set_pixels_per_point(zoom);
         set_style(&cc.egui_ctx);
-        let snapshot = fetch_snapshot().ok();
-        let selected_profile = snapshot
-            .as_ref()
-            .map(|s| s.state.active_profile.clone())
-            .unwrap_or_else(|| "Balanced".into());
+
+        let (cmd_tx, cmd_rx) = mpsc::channel::<Request>();
+        let (msg_tx, msg_rx) = mpsc::channel::<UiMsg>();
+        spawn_worker(cc.egui_ctx.clone(), cmd_rx, msg_tx);
+
         Ok(Self {
-            snapshot,
-            selected_profile,
+            snapshot: None,
+            selected_profile: "Balanced".into(),
             draft_curve: None,
-            status: String::new(),
-            last_refresh: Instant::now() - Duration::from_secs(2),
+            status: "Connecting…".into(),
+            connected: false,
+            zoom,
+            cmd_tx,
+            msg_rx,
         })
     }
 
+    /// Fire-and-forget: hand the request to the worker thread and move on.
+    /// The resulting snapshot (or error) arrives async via `msg_rx` and is
+    /// picked up next frame in `drain_worker`.
+    fn send(&mut self, req: Request) {
+        let _ = self.cmd_tx.send(req);
+    }
+
     fn refresh(&mut self) {
-        match fetch_snapshot() {
-            Ok(s) => {
-                self.snapshot = Some(s);
-                self.status = "Live".into();
+        self.send(Request::GetSnapshot);
+    }
+
+    fn drain_worker(&mut self) {
+        while let Ok(msg) = self.msg_rx.try_recv() {
+            match msg {
+                UiMsg::Snapshot(s) => {
+                    if self.snapshot.is_none() {
+                        self.selected_profile = s.state.active_profile.clone();
+                    }
+                    self.snapshot = Some(s);
+                    self.status = "Live".into();
+                    self.connected = true;
+                }
+                UiMsg::Error(message) => {
+                    self.status = message;
+                    self.connected = false;
+                }
             }
-            Err(err) => self.status = format!("Daemon unavailable: {err}"),
         }
     }
 
-    fn send(&mut self, req: Request) {
-        match send(req) {
-            Ok(Response::Snapshot(s)) => {
-                self.snapshot = Some(s);
-                self.status = "Applied".into();
-            }
-            Ok(Response::Error { message }) => self.status = message,
-            Err(err) => self.status = format!("Request failed: {err:#}"),
-        }
+    fn set_zoom(&mut self, ctx: &egui::Context, zoom: f32) {
+        self.zoom = zoom.clamp(MIN_ZOOM, MAX_ZOOM);
+        ctx.set_pixels_per_point(self.zoom);
     }
 
     fn sync_draft_from_snapshot(&mut self) {
@@ -117,19 +193,15 @@ impl App {
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
-        let editing = self
-            .draft_curve
-            .as_ref()
-            .map(|d| d.dirty || d.dragging)
-            .unwrap_or(false);
-        if !editing && self.last_refresh.elapsed() > Duration::from_millis(400) {
-            self.refresh();
-            self.last_refresh = Instant::now();
-        }
+    fn save(&mut self, storage: &mut dyn eframe::Storage) {
+        eframe::set_value(storage, ZOOM_KEY, &self.zoom);
+    }
 
+    fn update(&mut self, ctx: &egui::Context, _: &mut eframe::Frame) {
+        self.drain_worker();
         self.sync_draft_from_snapshot();
 
+        // Debounced curve autosave: only push to the daemon once edits settle.
         if let Some(draft) = &self.draft_curve {
             if draft.dirty && !draft.dragging && draft.last_edit.elapsed() > Duration::from_millis(350)
             {
@@ -147,44 +219,80 @@ impl eframe::App for App {
 
         egui::CentralPanel::default().show(ctx, |ui| {
             let Some(snapshot) = self.snapshot.clone() else {
-                ui.centered_and_justified(|ui| ui.heading("Start omen-daemon first"));
+                ui.centered_and_justified(|ui| {
+                    ui.vertical_centered(|ui| {
+                        ui.heading("Waiting for omen-daemon…");
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(&self.status).color(Color32::GRAY));
+                    });
+                });
                 return;
             };
 
-            ui.add_space(8.0);
-            ui.columns(2, |cols| {
-                left_dashboard(self, &snapshot, &mut cols[0]);
-                right_controls(self, &snapshot, &mut cols[1]);
+            egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
+                let avail = ui.available_width();
+                let content_width = avail.min(MAX_CONTENT_WIDTH);
+                let margin = ((avail - content_width) / 2.0).max(0.0);
+                ui.horizontal(|ui| {
+                    if margin > 1.0 {
+                        ui.add_space(margin);
+                    }
+                    ui.vertical(|ui| {
+                        ui.set_width(content_width);
+                        ui.add_space(4.0);
+                        if content_width > WIDE_BREAKPOINT {
+                            // Wide window / fullscreen: two balanced columns,
+                            // clamped so content never over-stretches.
+                            ui.columns(2, |cols| {
+                                left_dashboard(self, &snapshot, &mut cols[0]);
+                                right_controls(self, &snapshot, &mut cols[1]);
+                            });
+                        } else {
+                            // Narrow window: stack vertically instead of
+                            // squeezing two columns into too little space.
+                            left_dashboard(self, &snapshot, ui);
+                            ui.add_space(14.0);
+                            right_controls(self, &snapshot, ui);
+                        }
+                        ui.add_space(12.0);
+                    });
+                });
             });
         });
+
+        // Bounded idle redraw rate: the worker wakes us immediately when
+        // new data arrives, this just guarantees the telemetry graph keeps
+        // ticking even if a poll response is ever delayed.
+        ctx.request_repaint_after(IDLE_REPAINT);
     }
 }
 
 fn top_bar(app: &mut App, ctx: &egui::Context) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
-        ui.add_space(8.0);
+        ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("OMEN").size(30.0).strong().color(Color32::from_rgb(255, 96, 64)));
-            ui.label(RichText::new("Control").size(28.0).strong().color(Color32::WHITE));
-            ui.separator();
-            badge(ui, &app.status, Color32::from_rgb(52, 200, 124));
-            if let Some(s) = &app.snapshot {
-                badge(ui, &format!("{}°C", s.live.cpu_temp_c.round()), Color32::from_rgb(255, 128, 72));
-                badge(ui, &format!("{} RPM", s.live.rpm), Color32::from_rgb(80, 140, 255));
-                badge(ui, &format!("{}%", s.live.duty_pct.round()), Color32::from_rgb(184, 96, 255));
-                badge(
-                    ui,
-                    match s.live.power_source {
-                        PowerSource::AC => "AC Power",
-                        PowerSource::Battery => "Battery",
-                        PowerSource::Unknown => "Unknown",
-                    },
-                    Color32::from_rgb(92, 104, 132),
-                );
-            }
+            ui.label(RichText::new("OMEN").size(19.0).strong().color(Color32::from_rgb(255, 96, 64)));
+            ui.label(RichText::new("Control").size(19.0).strong().color(Color32::from_gray(225)));
+            ui.add_space(10.0);
+            let (dot, text) = if app.connected {
+                (Color32::from_rgb(64, 200, 128), "Connected")
+            } else {
+                (Color32::from_rgb(224, 76, 76), app.status.as_str())
+            };
+            ui.colored_label(dot, "●");
+            ui.label(RichText::new(text).color(Color32::GRAY).small());
+
             ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                if ui.add(action_button("Refresh")).clicked() {
+                if ui.add(egui::Button::new("Refresh").rounding(10.0)).clicked() {
                     app.refresh();
+                }
+                ui.add_space(12.0);
+                if ui.small_button("＋").clicked() {
+                    app.set_zoom(ctx, app.zoom + 0.1);
+                }
+                ui.label(RichText::new(format!("{:.0}%", app.zoom * 100.0)).small().color(Color32::GRAY));
+                if ui.small_button("－").clicked() {
+                    app.set_zoom(ctx, app.zoom - 0.1);
                 }
             });
         });
@@ -206,8 +314,12 @@ fn left_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
             stat_tile(&mut cols[1], "Profile", &snapshot.state.active_profile, Color32::from_rgb(92, 214, 196));
             stat_tile(
                 &mut cols[2],
-                "Platform",
-                snapshot.live.current_platform_mode.as_deref().unwrap_or("(none)"),
+                "Power",
+                match snapshot.live.power_source {
+                    PowerSource::AC => "AC",
+                    PowerSource::Battery => "Battery",
+                    PowerSource::Unknown => "Unknown",
+                },
                 Color32::from_rgb(104, 136, 255),
             );
         });
@@ -223,7 +335,7 @@ fn left_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
         let temp_points = PlotPoints::from_iter(snapshot.live.history.iter().enumerate().map(|(i, p)| [i as f64, p.temp_c as f64]));
         let duty_points = PlotPoints::from_iter(snapshot.live.history.iter().enumerate().map(|(i, p)| [i as f64, p.duty_pct as f64]));
         Plot::new("telemetry_plot")
-            .height(260.0)
+            .height(220.0)
             .allow_zoom(false)
             .allow_drag(false)
             .show(ui, |plot_ui| {
@@ -243,7 +355,7 @@ fn left_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
                 let button = egui::Button::new(RichText::new(&p.name).strong())
                     .fill(if selected { Color32::from_rgb(255, 96, 64) } else { Color32::from_rgb(24, 28, 40) })
                     .stroke(Stroke::new(1.0, if selected { Color32::from_rgb(255, 96, 64) } else { Color32::from_rgb(44, 50, 68) }))
-                    .rounding(14.0);
+                    .rounding(12.0);
                 if ui.add(button).clicked() {
                     app.selected_profile = p.name.clone();
                 }
@@ -410,7 +522,7 @@ fn right_controls(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
         ui.heading("Curve Studio");
         ui.label("Drag points. Double-click to add. Right-click a point to delete. Curve autosaves after edits settle.");
         ui.add_space(6.0);
-        
+
         if let Some(draft) = &mut app.draft_curve {
             let (changed, dragging) = curve_editor(ui, &mut draft.curve);
             if changed {
@@ -419,13 +531,12 @@ fn right_controls(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
             }
             draft.dragging = dragging;
         }
-        
+
         let should_apply = app.draft_curve.as_ref().map(|d| d.dirty).unwrap_or(false);
-        
+
         ui.add_space(6.0);
         ui.horizontal(|ui| {
             if ui.add_enabled(should_apply, action_button("Apply Now")).clicked() {
-                // Extract data and release borrow before calling send()
                 let data_to_apply = app.draft_curve.as_ref().map(|draft| {
                     (draft.profile.clone(), draft.curve.clone())
                 });
@@ -461,10 +572,10 @@ fn curve_editor(ui: &mut egui::Ui, curve: &mut FanCurve) -> (bool, bool) {
         changed = true;
     }
 
-    let desired = egui::vec2(ui.available_width(), 340.0);
+    let desired = egui::vec2(ui.available_width(), 300.0);
     let (rect, response) = ui.allocate_exact_size(desired, egui::Sense::click_and_drag());
     let painter = ui.painter_at(rect);
-    painter.rect_filled(rect, 20.0, Color32::from_rgb(16, 18, 26));
+    painter.rect_filled(rect, 16.0, Color32::from_rgb(16, 18, 26));
 
     for i in 0..=9 {
         let x = egui::lerp(rect.left()..=rect.right(), i as f32 / 9.0);
@@ -617,28 +728,28 @@ fn curve_editor(ui: &mut egui::Ui, curve: &mut FanCurve) -> (bool, bool) {
 fn set_style(ctx: &egui::Context) {
     let mut style = (*ctx.style()).clone();
     style.visuals = egui::Visuals::dark();
-    style.visuals.panel_fill = Color32::from_rgb(8, 10, 18);
-    style.visuals.window_fill = Color32::from_rgb(8, 10, 18);
+    style.visuals.panel_fill = Color32::from_rgb(10, 12, 18);
+    style.visuals.window_fill = Color32::from_rgb(10, 12, 18);
     style.visuals.widgets.active.bg_fill = Color32::from_rgb(255, 96, 64);
     style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(178, 52, 38);
     style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(22, 26, 36);
     style.visuals.selection.bg_fill = Color32::from_rgb(255, 96, 64);
-    style.spacing.item_spacing = egui::vec2(10.0, 10.0);
-    style.spacing.button_padding = egui::vec2(12.0, 8.0);
-    style.visuals.window_rounding = 18.0.into();
-    style.visuals.menu_rounding = 16.0.into();
-    style.visuals.widgets.noninteractive.rounding = 16.0.into();
-    style.visuals.widgets.inactive.rounding = 16.0.into();
-    style.visuals.widgets.hovered.rounding = 16.0.into();
-    style.visuals.widgets.active.rounding = 16.0.into();
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
+    style.spacing.button_padding = egui::vec2(12.0, 7.0);
+    style.visuals.window_rounding = 14.0.into();
+    style.visuals.menu_rounding = 12.0.into();
+    style.visuals.widgets.noninteractive.rounding = 12.0.into();
+    style.visuals.widgets.inactive.rounding = 12.0.into();
+    style.visuals.widgets.hovered.rounding = 12.0.into();
+    style.visuals.widgets.active.rounding = 12.0.into();
     ctx.set_style(style);
 }
 
 fn glass_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
     egui::Frame::none()
-        .fill(Color32::from_rgba_premultiplied(20, 24, 34, 238))
-        .stroke(Stroke::new(1.0, Color32::from_rgb(38, 44, 66)))
-        .rounding(20.0)
+        .fill(Color32::from_rgba_premultiplied(18, 21, 30, 235))
+        .stroke(Stroke::new(1.0, Color32::from_rgb(34, 39, 58)))
+        .rounding(16.0)
         .inner_margin(16.0)
         .show(ui, add);
 }
@@ -646,12 +757,12 @@ fn glass_card(ui: &mut egui::Ui, add: impl FnOnce(&mut egui::Ui)) {
 fn stat_tile(ui: &mut egui::Ui, title: &str, value: &str, color: Color32) {
     egui::Frame::none()
         .fill(Color32::from_rgb(16, 20, 28))
-        .stroke(Stroke::new(1.0, color))
-        .rounding(16.0)
+        .stroke(Stroke::new(1.0, color.gamma_multiply(0.6)))
+        .rounding(12.0)
         .inner_margin(12.0)
         .show(ui, |ui: &mut egui::Ui| {
             ui.label(RichText::new(title).small().color(Color32::GRAY));
-            ui.label(RichText::new(value).size(26.0).strong().color(color));
+            ui.label(RichText::new(value).size(24.0).strong().color(color));
         });
 }
 
@@ -670,7 +781,7 @@ fn action_button(text: &str) -> egui::Button<'_> {
     egui::Button::new(RichText::new(text).strong())
         .fill(Color32::from_rgb(255, 96, 64))
         .stroke(Stroke::new(1.0, Color32::from_rgb(255, 96, 64)))
-        .rounding(14.0)
+        .rounding(12.0)
 }
 
 fn pill_button(text: &str, active: bool) -> egui::Button<'_> {
@@ -678,13 +789,6 @@ fn pill_button(text: &str, active: bool) -> egui::Button<'_> {
         .fill(if active { Color32::from_rgb(255, 96, 64) } else { Color32::from_rgb(24, 28, 40) })
         .stroke(Stroke::new(1.0, if active { Color32::from_rgb(255, 96, 64) } else { Color32::from_rgb(44, 50, 68) }))
         .rounding(999.0)
-}
-
-fn fetch_snapshot() -> Result<Snapshot> {
-    match send(Request::GetSnapshot)? {
-        Response::Snapshot(s) => Ok(s),
-        Response::Error { message } => anyhow::bail!(message),
-    }
 }
 
 fn send(req: Request) -> Result<Response> {
