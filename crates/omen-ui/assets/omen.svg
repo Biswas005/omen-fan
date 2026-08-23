@@ -1,1 +1,11 @@
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256"><path fill="#f44336" d="M128 20 40 64v128l88 44 88-44V64z"/><path fill="#111" d="M128 48 64 80v96l64 32 64-32V80z"/><path fill="#f44336" d="M128 88c-22 0-40 18-40 40s18 40 40 40 40-18 40-40-18-40-40-40zm0 20c11 0 20 9 20 20s-9 20-20 20-20-9-20-20 9-20 20-20z"/></svg>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <defs>
+    <linearGradient id="omenGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ff8a5c"/>
+      <stop offset="1" stop-color="#ff3b30"/>
+    </linearGradient>
+  </defs>
+  <rect width="256" height="256" rx="52" fill="#0b0d12"/>
+  <path fill="url(#omenGrad)" d="M128 30 L202 82 180 82 224 154 172 154 196 226 128 170 60 226 84 154 32 154 76 82 54 82 Z"/>
+  <path fill="#0b0d12" d="M128 90 L166 150 128 194 90 150 Z"/>
+</svg>

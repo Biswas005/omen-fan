@@ -59,6 +59,13 @@ fn spawn_worker(
     });
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Dashboard,
+    Curve,
+    Power,
+}
+
 #[derive(Clone)]
 struct DraftCurve {
     profile: String,
@@ -77,6 +84,7 @@ struct App {
     zoom: f32,
     cmd_tx: mpsc::Sender<Request>,
     msg_rx: mpsc::Receiver<UiMsg>,
+    page: Page,
 }
 
 fn load_icon() -> IconData {
@@ -133,6 +141,7 @@ impl App {
             zoom,
             cmd_tx,
             msg_rx,
+            page: Page::Dashboard,
         })
     }
 
@@ -217,8 +226,8 @@ impl eframe::App for App {
 
         top_bar(self, ctx);
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let Some(snapshot) = self.snapshot.clone() else {
+        let Some(snapshot) = self.snapshot.clone() else {
+            egui::CentralPanel::default().show(ctx, |ui| {
                 ui.centered_and_justified(|ui| {
                     ui.vertical_centered(|ui| {
                         ui.heading("Waiting for omen-daemon…");
@@ -226,9 +235,17 @@ impl eframe::App for App {
                         ui.label(RichText::new(&self.status).color(Color32::GRAY));
                     });
                 });
-                return;
-            };
+            });
+            ctx.request_repaint_after(IDLE_REPAINT);
+            return;
+        };
 
+        // Narrow windows: collapse the rail into compact icon-only buttons
+        // instead of squeezing full labels into too little space.
+        let compact_rail = ctx.screen_rect().width() < WIDE_BREAKPOINT;
+        nav_rail(self, ctx, compact_rail);
+
+        egui::CentralPanel::default().show(ctx, |ui| {
             egui::ScrollArea::vertical().auto_shrink([false, false]).show(ui, |ui| {
                 let avail = ui.available_width();
                 let content_width = avail.min(MAX_CONTENT_WIDTH);
@@ -240,19 +257,10 @@ impl eframe::App for App {
                     ui.vertical(|ui| {
                         ui.set_width(content_width);
                         ui.add_space(4.0);
-                        if content_width > WIDE_BREAKPOINT {
-                            // Wide window / fullscreen: two balanced columns,
-                            // clamped so content never over-stretches.
-                            ui.columns(2, |cols| {
-                                left_dashboard(self, &snapshot, &mut cols[0]);
-                                right_controls(self, &snapshot, &mut cols[1]);
-                            });
-                        } else {
-                            // Narrow window: stack vertically instead of
-                            // squeezing two columns into too little space.
-                            left_dashboard(self, &snapshot, ui);
-                            ui.add_space(14.0);
-                            right_controls(self, &snapshot, ui);
+                        match self.page {
+                            Page::Dashboard => page_dashboard(self, &snapshot, ui),
+                            Page::Curve => page_curve(self, &snapshot, ui),
+                            Page::Power => page_power(self, &snapshot, ui),
                         }
                         ui.add_space(12.0);
                     });
@@ -271,8 +279,12 @@ fn top_bar(app: &mut App, ctx: &egui::Context) {
     egui::TopBottomPanel::top("top_bar").show(ctx, |ui| {
         ui.add_space(6.0);
         ui.horizontal(|ui| {
-            ui.label(RichText::new("OMEN").size(19.0).strong().color(Color32::from_rgb(255, 96, 64)));
-            ui.label(RichText::new("Control").size(19.0).strong().color(Color32::from_gray(225)));
+            let page_title = match app.page {
+                Page::Dashboard => "Dashboard",
+                Page::Curve => "Curve Studio",
+                Page::Power => "Modes & Power",
+            };
+            ui.label(RichText::new(page_title).size(17.0).strong().color(Color32::from_gray(230)));
             ui.add_space(10.0);
             let (dot, text) = if app.connected {
                 (Color32::from_rgb(64, 200, 128), "Connected")
@@ -300,7 +312,46 @@ fn top_bar(app: &mut App, ctx: &egui::Context) {
     });
 }
 
-fn left_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
+fn nav_rail(app: &mut App, ctx: &egui::Context, compact: bool) {
+    let width = if compact { 56.0 } else { 168.0 };
+    egui::SidePanel::left("nav_rail")
+        .resizable(false)
+        .exact_width(width)
+        .frame(egui::Frame::none().fill(Color32::from_rgb(13, 15, 22)).inner_margin(egui::Margin::symmetric(if compact { 6.0 } else { 12.0 }, 14.0)))
+        .show(ctx, |ui| {
+            ui.vertical_centered(|ui| {
+                draw_logo_mark(ui, if compact { 30.0 } else { 40.0 });
+                if !compact {
+                    ui.add_space(4.0);
+                    ui.label(RichText::new("OMEN").strong().size(15.0).color(Color32::from_rgb(255, 116, 82)));
+                }
+            });
+            ui.add_space(18.0);
+            nav_button(ui, app, Page::Dashboard, "📊", "Dashboard", compact);
+            nav_button(ui, app, Page::Curve, "📈", "Curve", compact);
+            nav_button(ui, app, Page::Power, "⚡", "Power", compact);
+        });
+}
+
+fn nav_button(ui: &mut egui::Ui, app: &mut App, page: Page, icon: &str, label: &str, compact: bool) {
+    let selected = app.page == page;
+    let text = if compact {
+        RichText::new(icon).size(18.0)
+    } else {
+        RichText::new(format!("{icon}  {label}")).size(14.0)
+    };
+    let button = egui::Button::new(text)
+        .min_size(egui::vec2(ui.available_width(), 34.0))
+        .fill(if selected { Color32::from_rgb(255, 96, 64) } else { Color32::TRANSPARENT })
+        .stroke(Stroke::NONE)
+        .rounding(10.0);
+    if ui.add(button).clicked() {
+        app.page = page;
+    }
+    ui.add_space(4.0);
+}
+
+fn page_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
     glass_card(ui, |ui| {
         ui.heading("Live Telemetry");
         ui.add_space(8.0);
@@ -370,7 +421,21 @@ fn left_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
     });
 }
 
-fn right_controls(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
+fn profile_switcher(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
+    ui.horizontal_wrapped(|ui| {
+        ui.label(RichText::new("Editing profile:").color(Color32::GRAY).small());
+        for p in &snapshot.state.profiles {
+            let selected = app.selected_profile == p.name;
+            if ui.add(pill_button(&p.name, selected)).clicked() {
+                app.selected_profile = p.name.clone();
+            }
+        }
+    });
+}
+
+fn page_power(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
+    profile_switcher(app, snapshot, ui);
+    ui.add_space(14.0);
     glass_card(ui, |ui| {
         ui.heading("Modes & Power");
         ui.add_space(8.0);
@@ -515,9 +580,11 @@ fn right_controls(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
                 }
             });
     });
+}
 
+fn page_curve(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
+    profile_switcher(app, snapshot, ui);
     ui.add_space(14.0);
-
     glass_card(ui, |ui| {
         ui.heading("Curve Studio");
         ui.label("Drag points. Double-click to add. Right-click a point to delete. Curve autosaves after edits settle.");
@@ -723,6 +790,23 @@ fn curve_editor(ui: &mut egui::Ui, curve: &mut FanCurve) -> (bool, bool) {
     }
 
     (changed, dragging.is_some())
+}
+
+fn draw_logo_mark(ui: &mut egui::Ui, size: f32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(size, size), egui::Sense::hover());
+    let painter = ui.painter_at(rect);
+    painter.rect_filled(rect, size * 0.22, Color32::from_rgb(11, 13, 18));
+
+    let pt = |x: f32, y: f32| egui::pos2(rect.left() + x * rect.width(), rect.top() + y * rect.height());
+
+    // Outer diamond (convex — required for Shape::convex_polygon).
+    let outer = vec![pt(0.5, 0.08), pt(0.92, 0.5), pt(0.5, 0.92), pt(0.08, 0.5)];
+    painter.add(egui::Shape::convex_polygon(outer, Color32::from_rgb(255, 116, 82), Stroke::NONE));
+
+    // Inner diamond cut out in the background colour, giving a hollow
+    // flame-like silhouette rather than a solid gem.
+    let inner = vec![pt(0.5, 0.30), pt(0.70, 0.5), pt(0.5, 0.70), pt(0.30, 0.5)];
+    painter.add(egui::Shape::convex_polygon(inner, Color32::from_rgb(11, 13, 18), Stroke::NONE));
 }
 
 fn set_style(ctx: &egui::Context) {
