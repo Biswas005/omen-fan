@@ -14,9 +14,12 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use tracing::{error, info, warn};
+
+mod hardware_ext;
+use hardware_ext as hwext;
 
 fn main() -> Result<()> {
     tracing_subscriber::fmt()
@@ -89,12 +92,31 @@ struct Daemon {
     power_source: PowerSource,
     max_fan_active: bool,
     graphics_mode: Option<GraphicsMode>,
+    cpu_load: hwext::CpuLoadTracker,
+    rapl: hwext::RaplTracker,
+    last_cpu_load_pct: Option<f32>,
+    last_cpu_power_w: Option<f32>,
+    gpu_cache: Option<hwext::GpuTelemetry>,
+    gpu_last_poll: Option<Instant>,
+    tick_count: u64,
 }
 
 impl Daemon {
     fn new(db_path: PathBuf) -> Result<Self> {
         let hw = Hardware::detect();
-        let state = load_or_init_db(&db_path, &hw)?;
+        let mut state = load_or_init_db(&db_path, &hw)?;
+        // Merge in freshly-detected extra capabilities every startup, since
+        // these depend on what's plugged in / which kernel modules loaded
+        // this boot, not on anything persisted in the db.
+        state.capabilities.supports_cpu_power = hwext::RaplTracker::new().supported();
+        let gpu_range = hwext::read_gpu_power_limit_range();
+        state.capabilities.supports_gpu = hwext::read_gpu_telemetry().is_some();
+        state.capabilities.gpu_power_range_w = gpu_range;
+        state.capabilities.supports_charge_limit = hwext::charge_limit_path().is_some();
+        state.capabilities.supports_cpu_boost = hwext::cpu_boost_path().is_some();
+        state.capabilities.supports_kbd_backlight = hwext::kbd_backlight_path().is_some();
+        state.capabilities.supports_screen_brightness = hwext::backlight_path().is_some();
+        state.capabilities.supports_airplane_mode = hwext::read_airplane_mode().is_some();
         Ok(Self {
             db_path,
             state,
@@ -105,13 +127,42 @@ impl Daemon {
             power_source: PowerSource::Unknown,
             max_fan_active: false,
             graphics_mode: None,
+            cpu_load: hwext::CpuLoadTracker::default(),
+            rapl: hwext::RaplTracker::new(),
+            last_cpu_load_pct: None,
+            last_cpu_power_w: None,
+            gpu_cache: None,
+            gpu_last_poll: None,
+            tick_count: 0,
         })
     }
 
     fn apply_startup(&mut self) -> Result<()> {
         self.apply_power_behavior()?;
         let profile = self.state.active().clone();
-        self.apply_profile(&profile)
+        self.apply_profile(&profile)?;
+        // Re-apply any persisted convenience-control settings so they
+        // survive a daemon/reboot instead of resetting to hardware defaults.
+        let settings = self.state.system_settings.clone();
+        if let Some(pct) = settings.charge_limit_pct {
+            let _ = hwext::apply_charge_limit(pct);
+        }
+        if let Some(enabled) = settings.cpu_boost_enabled {
+            let _ = hwext::apply_cpu_boost(enabled);
+        }
+        if let Some(pct) = settings.kbd_backlight_pct {
+            let _ = hwext::apply_kbd_backlight(pct);
+        }
+        if let Some(pct) = settings.screen_brightness_pct {
+            let _ = hwext::apply_screen_brightness(pct);
+        }
+        if let Some(enabled) = settings.airplane_mode {
+            let _ = hwext::apply_airplane_mode(enabled);
+        }
+        if let Some(watts) = settings.gpu_power_limit_w {
+            let _ = hwext::apply_gpu_power_limit(watts);
+        }
+        Ok(())
     }
 
     fn tick(&mut self) -> Result<()> {
@@ -148,6 +199,17 @@ impl Daemon {
                 }
                 FanMode::Max => unreachable!(),
             }
+        }
+
+        self.tick_count += 1;
+        self.last_cpu_load_pct = self.cpu_load.sample();
+        self.last_cpu_power_w = self.rapl.sample();
+        let should_poll_gpu = self.gpu_last_poll
+            .map(|t| t.elapsed() >= Duration::from_secs(2))
+            .unwrap_or(true);
+        if self.state.capabilities.supports_gpu && should_poll_gpu {
+            self.gpu_cache = hwext::read_gpu_telemetry();
+            self.gpu_last_poll = Some(Instant::now());
         }
 
         self.push_history(raw);
@@ -278,6 +340,7 @@ impl Daemon {
     }
 
     fn snapshot(&self) -> Snapshot {
+        let battery = hwext::read_battery();
         Snapshot {
             state: self.state.clone(),
             live: LiveTelemetry {
@@ -290,6 +353,14 @@ impl Daemon {
                 max_fan_active: self.max_fan_active,
                 graphics_mode: self.hw.read_graphics_mode().or_else(|| self.graphics_mode.clone()),
                 history: self.telemetry_history.iter().cloned().collect(),
+                cpu_freq_mhz: hwext::read_cpu_freq_mhz(),
+                cpu_load_pct: self.last_cpu_load_pct,
+                cpu_power_w: self.last_cpu_power_w,
+                gpu_temp_c: self.gpu_cache.as_ref().map(|g| g.temp_c),
+                gpu_hotspot_c: self.gpu_cache.as_ref().and_then(|g| g.hotspot_c),
+                gpu_power_w: self.gpu_cache.as_ref().map(|g| g.power_w),
+                battery_pct: battery.map(|(pct, _)| pct),
+                battery_health_pct: battery.and_then(|(_, health)| health),
             },
         }
     }
@@ -387,6 +458,36 @@ impl Daemon {
                     self.state.battery_behavior.restore_ac_profile = restore_ac_profile;
                     save_state_db(&self.db_path, &self.state)?;
                 }
+                Request::SetChargeLimit { pct } => {
+                    hwext::apply_charge_limit(pct)?;
+                    self.state.system_settings.charge_limit_pct = Some(pct);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
+                Request::SetCpuBoost { enabled } => {
+                    hwext::apply_cpu_boost(enabled)?;
+                    self.state.system_settings.cpu_boost_enabled = Some(enabled);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
+                Request::SetKeyboardBacklight { pct } => {
+                    hwext::apply_kbd_backlight(pct)?;
+                    self.state.system_settings.kbd_backlight_pct = Some(pct);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
+                Request::SetScreenBrightness { pct } => {
+                    hwext::apply_screen_brightness(pct)?;
+                    self.state.system_settings.screen_brightness_pct = Some(pct);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
+                Request::SetAirplaneMode { enabled } => {
+                    hwext::apply_airplane_mode(enabled)?;
+                    self.state.system_settings.airplane_mode = Some(enabled);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
+                Request::SetGpuPowerLimit { watts } => {
+                    hwext::apply_gpu_power_limit(watts)?;
+                    self.state.system_settings.gpu_power_limit_w = Some(watts);
+                    save_state_db(&self.db_path, &self.state)?;
+                }
                 Request::Reload => {
                     self.state = load_or_init_db(&self.db_path, &self.hw)?;
                 }
@@ -457,6 +558,14 @@ impl Hardware {
             pwm_path: hwmon.as_ref().map(|h| h.join("pwm1").display().to_string()),
             rpm_path: hwmon.as_ref().map(|h| h.join("fan1_input").display().to_string()),
             temp_path: temp.as_ref().map(|p| p.display().to_string()),
+            supports_cpu_power: false,
+            supports_gpu: false,
+            gpu_power_range_w: None,
+            supports_charge_limit: false,
+            supports_cpu_boost: false,
+            supports_kbd_backlight: false,
+            supports_screen_brightness: false,
+            supports_airplane_mode: false,
         };
         let power_online = detect_power();
         Self {

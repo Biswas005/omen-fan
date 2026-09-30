@@ -56,6 +56,30 @@ fn print_status(snapshot: &Snapshot) {
     if let Some(mode) = &live.graphics_mode {
         println!("{BOLD}Graphics mode{RESET}    {}", mode.label());
     }
+    if let Some(v) = live.cpu_freq_mhz {
+        println!("{BOLD}CPU freq{RESET}         {v} MHz");
+    }
+    if let Some(v) = live.cpu_load_pct {
+        println!("{BOLD}CPU load{RESET}         {v:.0}%");
+    }
+    if let Some(v) = live.cpu_power_w {
+        println!("{BOLD}CPU power{RESET}        {v:.1} W");
+    }
+    if let Some(v) = live.gpu_temp_c {
+        println!("{BOLD}GPU temp{RESET}         {v:.0} °C");
+    }
+    if let Some(v) = live.gpu_hotspot_c {
+        println!("{BOLD}GPU hotspot{RESET}      {v:.0} °C");
+    }
+    if let Some(v) = live.gpu_power_w {
+        println!("{BOLD}GPU power{RESET}        {v:.0} W");
+    }
+    if let Some(v) = live.battery_pct {
+        println!("{BOLD}Battery{RESET}          {v:.0}%");
+    }
+    if let Some(v) = live.battery_health_pct {
+        println!("{BOLD}Battery health{RESET}   {v:.0}%");
+    }
     if live.max_fan_active {
         println!("{RED}{BOLD}MAX FAN ACTIVE{RESET}");
     }
@@ -91,6 +115,12 @@ fn usage() {
     println!("  fan max <profile> <on|off>      Toggle the max-fan override");
     println!("  curve show <profile>            Print a profile's fan curve");
     println!("  platform <profile> <mode>       Set a profile's platform mode");
+    println!("  battery limit <pct>             Set the battery charge limit (20-100)");
+    println!("  cpu boost <on|off>              Toggle CPU turbo boost");
+    println!("  kbd backlight <pct>             Set keyboard backlight brightness");
+    println!("  brightness <pct>                Set screen brightness");
+    println!("  airplane <on|off>               Toggle WiFi + Bluetooth radios");
+    println!("  gpu power <watts>                Set the dGPU power limit");
 }
 
 fn main() -> Result<()> {
@@ -159,6 +189,56 @@ fn main() -> Result<()> {
             send(Request::SetPlatformMode { profile: profile.clone(), mode: Some(mode.clone()) })?;
             println!("{GREEN}{profile}: platform mode set to {mode}{RESET}");
         }
+        Some("battery") => match args.get(1).map(|s| s.as_str()) {
+            Some("limit") => {
+                let pct: u8 = args.get(2).context("usage: omen-cli battery limit <pct>")?.parse().context("pct must be a number 20-100")?;
+                send(Request::SetChargeLimit { pct })?;
+                println!("{GREEN}Battery charge limit set to {pct}%{RESET}");
+            }
+            _ => usage(),
+        },
+        Some("cpu") => match args.get(1).map(|s| s.as_str()) {
+            Some("boost") => {
+                let enabled = match args.get(2).map(|s| s.as_str()) {
+                    Some("on") => true,
+                    Some("off") => false,
+                    _ => bail!("usage: omen-cli cpu boost <on|off>"),
+                };
+                send(Request::SetCpuBoost { enabled })?;
+                println!("{GREEN}CPU boost {}{RESET}", if enabled { "enabled" } else { "disabled" });
+            }
+            _ => usage(),
+        },
+        Some("kbd") => match args.get(1).map(|s| s.as_str()) {
+            Some("backlight") => {
+                let pct: u8 = args.get(2).context("usage: omen-cli kbd backlight <pct>")?.parse().context("pct must be a number 0-100")?;
+                send(Request::SetKeyboardBacklight { pct })?;
+                println!("{GREEN}Keyboard backlight set to {pct}%{RESET}");
+            }
+            _ => usage(),
+        },
+        Some("brightness") => {
+            let pct: u8 = args.get(1).context("usage: omen-cli brightness <pct>")?.parse().context("pct must be a number 1-100")?;
+            send(Request::SetScreenBrightness { pct })?;
+            println!("{GREEN}Screen brightness set to {pct}%{RESET}");
+        }
+        Some("airplane") => {
+            let enabled = match args.get(1).map(|s| s.as_str()) {
+                Some("on") => true,
+                Some("off") => false,
+                _ => bail!("usage: omen-cli airplane <on|off>"),
+            };
+            send(Request::SetAirplaneMode { enabled })?;
+            println!("{GREEN}Airplane mode {}{RESET}", if enabled { "on" } else { "off" });
+        }
+        Some("gpu") => match args.get(1).map(|s| s.as_str()) {
+            Some("power") => {
+                let watts: u32 = args.get(2).context("usage: omen-cli gpu power <watts>")?.parse().context("watts must be a number")?;
+                send(Request::SetGpuPowerLimit { watts })?;
+                println!("{GREEN}GPU power limit set to {watts} W{RESET}");
+            }
+            _ => usage(),
+        },
         _ => usage(),
     }
 

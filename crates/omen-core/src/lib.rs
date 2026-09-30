@@ -254,6 +254,32 @@ pub struct Capabilities {
     pub pwm_path: Option<String>,
     pub rpm_path: Option<String>,
     pub temp_path: Option<String>,
+    #[serde(default)]
+    pub supports_cpu_power: bool,
+    #[serde(default)]
+    pub supports_gpu: bool,
+    #[serde(default)]
+    pub gpu_power_range_w: Option<(u32, u32)>,
+    #[serde(default)]
+    pub supports_charge_limit: bool,
+    #[serde(default)]
+    pub supports_cpu_boost: bool,
+    #[serde(default)]
+    pub supports_kbd_backlight: bool,
+    #[serde(default)]
+    pub supports_screen_brightness: bool,
+    #[serde(default)]
+    pub supports_airplane_mode: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct SystemSettings {
+    pub charge_limit_pct: Option<u8>,
+    pub cpu_boost_enabled: Option<bool>,
+    pub kbd_backlight_pct: Option<u8>,
+    pub screen_brightness_pct: Option<u8>,
+    pub airplane_mode: Option<bool>,
+    pub gpu_power_limit_w: Option<u32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -264,6 +290,8 @@ pub struct AppState {
     pub battery_behavior: BatteryBehavior,
     pub capabilities: Capabilities,
     pub poll_interval_ms: u64,
+    #[serde(default)]
+    pub system_settings: SystemSettings,
 }
 
 impl AppState {
@@ -285,6 +313,7 @@ impl AppState {
             },
             capabilities: caps,
             poll_interval_ms: 500,
+            system_settings: SystemSettings::default(),
         }
     }
 
@@ -321,6 +350,14 @@ pub struct LiveTelemetry {
     pub max_fan_active: bool,
     pub graphics_mode: Option<GraphicsMode>,
     pub history: Vec<TelemetryPoint>,
+    pub cpu_freq_mhz: Option<u32>,
+    pub cpu_load_pct: Option<f32>,
+    pub cpu_power_w: Option<f32>,
+    pub gpu_temp_c: Option<f32>,
+    pub gpu_hotspot_c: Option<f32>,
+    pub gpu_power_w: Option<f32>,
+    pub battery_pct: Option<f32>,
+    pub battery_health_pct: Option<f32>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -341,6 +378,12 @@ pub enum Request {
     SetMaxFan { profile: String, enabled: bool },
     SetGraphicsMode { profile: String, mode: Option<GraphicsMode> },
     SetBatteryBehavior { enabled: bool, battery_mode: Option<String>, restore_ac_profile: bool },
+    SetChargeLimit { pct: u8 },
+    SetCpuBoost { enabled: bool },
+    SetKeyboardBacklight { pct: u8 },
+    SetScreenBrightness { pct: u8 },
+    SetAirplaneMode { enabled: bool },
+    SetGpuPowerLimit { watts: u32 },
     Reload,
 }
 

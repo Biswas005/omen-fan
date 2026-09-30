@@ -64,6 +64,7 @@ enum Page {
     Dashboard,
     Curve,
     Power,
+    About,
 }
 
 #[derive(Clone)]
@@ -261,6 +262,7 @@ impl eframe::App for App {
                             Page::Dashboard => page_dashboard(self, &snapshot, ui),
                             Page::Curve => page_curve(self, &snapshot, ui),
                             Page::Power => page_power(self, &snapshot, ui),
+                            Page::About => page_about(&snapshot, ui),
                         }
                         ui.add_space(12.0);
                     });
@@ -283,6 +285,7 @@ fn top_bar(app: &mut App, ctx: &egui::Context) {
                 Page::Dashboard => "Dashboard",
                 Page::Curve => "Curve Studio",
                 Page::Power => "Modes & Power",
+                Page::About => "About",
             };
             ui.label(RichText::new(page_title).size(17.0).strong().color(Color32::from_gray(230)));
             ui.add_space(10.0);
@@ -330,6 +333,7 @@ fn nav_rail(app: &mut App, ctx: &egui::Context, compact: bool) {
             nav_button(ui, app, Page::Dashboard, "📊", "Dashboard", compact);
             nav_button(ui, app, Page::Curve, "📈", "Curve", compact);
             nav_button(ui, app, Page::Power, "⚡", "Power", compact);
+            nav_button(ui, app, Page::About, "ℹ", "About", compact);
         });
 }
 
@@ -396,6 +400,38 @@ fn page_dashboard(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
     });
 
     ui.add_space(14.0);
+
+    let live = &snapshot.live;
+    let has_cpu_extra = live.cpu_freq_mhz.is_some() || live.cpu_load_pct.is_some() || live.cpu_power_w.is_some();
+    let has_gpu = live.gpu_temp_c.is_some();
+    let has_battery = live.battery_pct.is_some();
+    if has_cpu_extra || has_gpu || has_battery {
+        glass_card(ui, |ui| {
+            ui.heading("CPU / GPU / Battery");
+            ui.add_space(8.0);
+            if has_cpu_extra {
+                ui.columns(3, |cols| {
+                    stat_tile_opt(&mut cols[0], "CPU Freq", live.cpu_freq_mhz.map(|v| format!("{v} MHz")), Color32::from_rgb(120, 190, 255));
+                    stat_tile_opt(&mut cols[1], "CPU Load", live.cpu_load_pct.map(|v| format!("{v:.0}%")), Color32::from_rgb(255, 196, 92));
+                    stat_tile_opt(&mut cols[2], "CPU Power", live.cpu_power_w.map(|v| format!("{v:.1} W")), Color32::from_rgb(255, 140, 90));
+                });
+            }
+            if has_gpu {
+                ui.columns(3, |cols| {
+                    stat_tile_opt(&mut cols[0], "GPU Temp", live.gpu_temp_c.map(|v| format!("{v:.0} °C")), Color32::from_rgb(146, 106, 255));
+                    stat_tile_opt(&mut cols[1], "GPU Hotspot", live.gpu_hotspot_c.map(|v| format!("{v:.0} °C")), Color32::from_rgb(255, 96, 96));
+                    stat_tile_opt(&mut cols[2], "GPU Power", live.gpu_power_w.map(|v| format!("{v:.0} W")), Color32::from_rgb(200, 130, 255));
+                });
+            }
+            if has_battery {
+                ui.columns(2, |cols| {
+                    stat_tile_opt(&mut cols[0], "Battery", live.battery_pct.map(|v| format!("{v:.0}%")), Color32::from_rgb(92, 214, 196));
+                    stat_tile_opt(&mut cols[1], "Battery Health", live.battery_health_pct.map(|v| format!("{v:.0}%")), Color32::from_rgb(150, 214, 130));
+                });
+            }
+        });
+        ui.add_space(14.0);
+    }
 
     glass_card(ui, |ui| {
         ui.heading("Quick Profile Actions");
@@ -541,7 +577,10 @@ fn page_power(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
         ui.separator();
         ui.label(RichText::new("Battery Automation").strong());
         let mut enabled = snapshot.state.battery_behavior.enabled;
-        if ui.checkbox(&mut enabled, "Enable battery mode automation").changed() {
+        if ui.toggle_value(&mut enabled, "Switch profile automatically on battery")
+            .on_hover_text("When unplugged, automatically switches to your Quiet profile (or the battery mode below) to save power.")
+            .changed()
+        {
             app.send(Request::SetBatteryBehavior {
                 enabled,
                 battery_mode: snapshot.state.battery_behavior.battery_mode.clone(),
@@ -549,7 +588,10 @@ fn page_power(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
             });
         }
         let mut restore = snapshot.state.battery_behavior.restore_ac_profile;
-        if ui.checkbox(&mut restore, "Restore AC profile on reconnect").changed() {
+        if ui.toggle_value(&mut restore, "Restore previous profile when plugged back in")
+            .on_hover_text("Switches back to whichever profile was active before you went on battery.")
+            .changed()
+        {
             app.send(Request::SetBatteryBehavior {
                 enabled: snapshot.state.battery_behavior.enabled,
                 battery_mode: snapshot.state.battery_behavior.battery_mode.clone(),
@@ -580,6 +622,75 @@ fn page_power(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
                 }
             });
     });
+
+    let caps = &snapshot.state.capabilities;
+    let settings = &snapshot.state.system_settings;
+    let any_convenience = caps.supports_charge_limit
+        || caps.supports_cpu_boost
+        || caps.supports_kbd_backlight
+        || caps.supports_screen_brightness
+        || caps.supports_airplane_mode
+        || caps.gpu_power_range_w.is_some();
+
+    if any_convenience {
+        ui.add_space(14.0);
+        glass_card(ui, |ui| {
+            ui.heading("Convenience Controls");
+            ui.label(RichText::new("Only shows controls actually detected on this hardware.").small().color(Color32::GRAY));
+            ui.add_space(8.0);
+
+            if caps.supports_charge_limit {
+                let mut pct = settings.charge_limit_pct.unwrap_or(100) as f32;
+                if ui.add(egui::Slider::new(&mut pct, 20.0..=100.0).text("Battery charge limit %"))
+                    .on_hover_text("Stops charging past this percentage to slow long-term battery wear.")
+                    .changed()
+                {
+                    app.send(Request::SetChargeLimit { pct: pct.round() as u8 });
+                }
+            }
+
+            if caps.supports_cpu_boost {
+                let mut boost = settings.cpu_boost_enabled.unwrap_or(true);
+                if ui.toggle_value(&mut boost, "CPU boost (turbo) enabled")
+                    .on_hover_text("Allows the CPU to clock above its base frequency under load. Disabling trades peak performance for lower heat/noise.")
+                    .changed()
+                {
+                    app.send(Request::SetCpuBoost { enabled: boost });
+                }
+            }
+
+            if caps.supports_kbd_backlight {
+                let mut pct = settings.kbd_backlight_pct.unwrap_or(50) as f32;
+                if ui.add(egui::Slider::new(&mut pct, 0.0..=100.0).text("Keyboard backlight %")).changed() {
+                    app.send(Request::SetKeyboardBacklight { pct: pct.round() as u8 });
+                }
+            }
+
+            if caps.supports_screen_brightness {
+                let mut pct = settings.screen_brightness_pct.unwrap_or(70) as f32;
+                if ui.add(egui::Slider::new(&mut pct, 1.0..=100.0).text("Screen brightness %")).changed() {
+                    app.send(Request::SetScreenBrightness { pct: pct.round() as u8 });
+                }
+            }
+
+            if caps.supports_airplane_mode {
+                let mut on = settings.airplane_mode.unwrap_or(false);
+                if ui.toggle_value(&mut on, "Airplane mode (WiFi + Bluetooth off)").changed() {
+                    app.send(Request::SetAirplaneMode { enabled: on });
+                }
+            }
+
+            if let Some((min, max)) = caps.gpu_power_range_w {
+                let mut watts = settings.gpu_power_limit_w.unwrap_or(max) as f32;
+                if ui.add(egui::Slider::new(&mut watts, min as f32..=max as f32).text("GPU power limit (W)"))
+                    .on_hover_text("Caps the dGPU's power draw. Lower values run cooler/quieter at some performance cost.")
+                    .changed()
+                {
+                    app.send(Request::SetGpuPowerLimit { watts: watts.round() as u32 });
+                }
+            }
+        });
+    }
 }
 
 fn page_curve(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
@@ -625,6 +736,50 @@ fn page_curve(app: &mut App, snapshot: &Snapshot, ui: &mut egui::Ui) {
                 }
             }
         });
+    });
+}
+
+fn page_about(snapshot: &Snapshot, ui: &mut egui::Ui) {
+    let caps = &snapshot.state.capabilities;
+
+    glass_card(ui, |ui| {
+        ui.heading("System");
+        ui.add_space(8.0);
+        ui.label(RichText::new(&caps.board_name).size(20.0).strong().color(Color32::from_rgb(255, 116, 82)));
+        if let Some(id) = &caps.board_id {
+            ui.label(RichText::new(id).small().color(Color32::GRAY));
+        }
+        ui.add_space(4.0);
+        ui.label(RichText::new(format!("omen-ui v{}", env!("CARGO_PKG_VERSION"))).color(Color32::GRAY));
+    });
+
+    ui.add_space(14.0);
+
+    glass_card(ui, |ui| {
+        ui.heading("Detected Capabilities");
+        ui.label(RichText::new("What this build could find on your hardware — if something you expect is missing here, it won't show up as a control either.").small().color(Color32::GRAY));
+        ui.add_space(8.0);
+        capability_row(ui, "Max fan override", caps.supports_max_fan);
+        capability_row(ui, "Graphics mode switching", caps.supports_graphics_mode);
+        capability_row(ui, "CPU package power (RAPL)", caps.supports_cpu_power);
+        capability_row(ui, "GPU telemetry (nvidia-smi)", caps.supports_gpu);
+        capability_row(ui, "GPU power limit control", caps.gpu_power_range_w.is_some());
+        capability_row(ui, "Battery charge limit", caps.supports_charge_limit);
+        capability_row(ui, "CPU boost toggle", caps.supports_cpu_boost);
+        capability_row(ui, "Keyboard backlight", caps.supports_kbd_backlight);
+        capability_row(ui, "Screen brightness", caps.supports_screen_brightness);
+        capability_row(ui, "Airplane mode (rfkill)", caps.supports_airplane_mode);
+    });
+}
+
+fn capability_row(ui: &mut egui::Ui, label: &str, present: bool) {
+    ui.horizontal(|ui| {
+        if present {
+            ui.colored_label(Color32::from_rgb(64, 200, 128), "●");
+        } else {
+            ui.colored_label(Color32::from_gray(90), "○");
+        }
+        ui.label(if present { RichText::new(label) } else { RichText::new(label).color(Color32::GRAY) });
     });
 }
 
@@ -848,6 +1003,13 @@ fn stat_tile(ui: &mut egui::Ui, title: &str, value: &str, color: Color32) {
             ui.label(RichText::new(title).small().color(Color32::GRAY));
             ui.label(RichText::new(value).size(24.0).strong().color(color));
         });
+}
+
+fn stat_tile_opt(ui: &mut egui::Ui, title: &str, value: Option<String>, color: Color32) {
+    match value {
+        Some(v) => stat_tile(ui, title, &v, color),
+        None => stat_tile(ui, title, "—", Color32::from_gray(90)),
+    }
 }
 
 fn badge(ui: &mut egui::Ui, text: &str, color: Color32) {
